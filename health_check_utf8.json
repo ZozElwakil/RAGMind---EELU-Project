@@ -1,0 +1,6 @@
+﻿{
+    "status":  "healthy",
+    "database":  "connected",
+    "llm_provider":  "gemini",
+    "vector_db_provider":  "pgvector"
+}
