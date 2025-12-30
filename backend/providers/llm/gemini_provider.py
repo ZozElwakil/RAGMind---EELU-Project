@@ -25,6 +25,9 @@ class GeminiProvider(LLMInterface):
         """
         self.api_key = api_key or settings.gemini_api_key
         self.model_name = model_name or settings.gemini_model
+
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY is required. Set it in .env or environment variables.")
         
         # Configure Gemini
         genai.configure(api_key=self.api_key)

@@ -6,6 +6,7 @@ from typing import Optional, List
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database.models import Asset, Chunk, Project
+from backend.database.connection import async_session_maker
 from backend.services.file_service import FileService
 from backend.services.document_loader import DocumentLoaderService
 from backend.services.chunking_service import ChunkingService
@@ -22,11 +23,13 @@ class DocumentController:
     
     def __init__(self):
         """Initialize document controller."""
+        logger.info("Initializing DocumentController...")
         self.file_service = FileService()
         self.document_loader = DocumentLoaderService()
         self.chunking_service = ChunkingService()
         self.embedding_service = EmbeddingService()
         self.vector_db = VectorDBProviderFactory.create_provider()
+        logger.info("✅ DocumentController initialized")
     
     async def upload_document(
         self,
@@ -53,9 +56,12 @@ class DocumentController:
             ValueError: If validation fails
         """
         try:
+            logger.debug(f"Uploading document: {filename} ({file_size} bytes) to project {project_id}")
+            
             # Validate file
             is_valid, error_msg = self.file_service.validate_file(filename, file_size)
             if not is_valid:
+                logger.warning(f"File validation failed: {error_msg}")
                 raise ValueError(error_msg)
             
             # Check project exists
@@ -99,22 +105,16 @@ class DocumentController:
             logger.error(f"Error uploading document: {str(e)}")
             raise
     
-    async def process_document(
-        self,
-        db: AsyncSession,
-        asset_id: int
-    ) -> bool:
+    async def process_document(self, asset_id: int) -> bool:
         """
         Process document: extract, chunk, embed, and store.
-        
-        Args:
-            db: Database session
-            asset_id: Asset ID
-            
+
         Returns:
             True if successful
         """
-        try:
+        logger.info(f"🔄 Starting document processing for asset {asset_id}")
+        
+        async with async_session_maker() as db:
             # Get asset
             asset_stmt = select(Asset).where(Asset.id == asset_id)
             asset_result = await db.execute(asset_stmt)
@@ -123,17 +123,23 @@ class DocumentController:
             if not asset:
                 raise ValueError(f"Asset not found: {asset_id}")
             
+            logger.debug(f"Processing document: {asset.original_filename} ({asset.file_size} bytes)")
+            
             # Update status to processing
             asset.status = "processing"
             await db.commit()
             
             try:
                 # Extract text
-                logger.info(f"Extracting text from {asset.original_filename}")
+                logger.info(f"📖 Extracting text from {asset.original_filename}")
                 text = await self.document_loader.load_document(asset.file_path)
+                if not text or not text.strip():
+                    raise ValueError("No text extracted from document (empty content).")
+                
+                logger.debug(f"Extracted {len(text)} characters of text")
                 
                 # Chunk text
-                logger.info(f"Chunking text ({len(text)} characters)")
+                logger.info(f"✂️ Chunking text ({len(text)} characters)")
                 chunks_data = await self.chunking_service.chunk_document(
                     text=text,
                     document_name=asset.original_filename,
@@ -142,6 +148,8 @@ class DocumentController:
                         'asset_id': asset.id
                     }
                 )
+                
+                logger.debug(f"Created {len(chunks_data)} chunks")
                 
                 # Create chunk records
                 chunk_records = []
@@ -162,17 +170,42 @@ class DocumentController:
                 for chunk in chunk_records:
                     await db.refresh(chunk)
                 
+                logger.debug(f"Saved {len(chunk_records)} chunks to database")
+                
                 # Generate embeddings
-                logger.info(f"Generating embeddings for {len(chunk_records)} chunks")
+                logger.info(f"🧠 Generating embeddings for {len(chunk_records)} chunks")
                 texts = [chunk.content for chunk in chunk_records]
                 embeddings = await self.embedding_service.generate_embeddings(texts)
                 
+                logger.debug(f"Generated {len(embeddings)} embeddings")
+
+                # Ensure collection exists (needed for Qdrant)
+                collection_name = f"project_{asset.project_id}"
+                dim = self.embedding_service.get_embedding_dimension()
+                exists = await self.vector_db.collection_exists(collection_name, project_id=asset.project_id)
+                if not exists:
+                    logger.info(f"Creating vector collection: {collection_name}")
+                    await self.vector_db.create_collection(collection_name, dimension=dim)
+                else:
+                    logger.debug(f"Vector collection {collection_name} already exists")
+
                 # Store embeddings in chunks and vector DB
                 chunk_ids = [chunk.id for chunk in chunk_records]
+                payloads = [
+                    {
+                        "content": c.content,
+                        "metadata": c.extra_metadata,
+                        "asset_id": c.asset_id,
+                        "project_id": c.project_id,
+                    }
+                    for c in chunk_records
+                ]
+                logger.info(f"💾 Storing {len(embeddings)} vectors in database")
                 await self.vector_db.add_vectors(
-                    collection_name=f"project_{asset.project_id}",
+                    collection_name=collection_name,
                     vectors=embeddings,
-                    ids=chunk_ids
+                    ids=chunk_ids,
+                    metadata=payloads
                 )
                 
                 # Update asset status
@@ -180,7 +213,7 @@ class DocumentController:
                 asset.processed_at = datetime.utcnow()
                 await db.commit()
                 
-                logger.info(f"Completed processing document: {asset.id}")
+                logger.info(f"✅ Completed processing document: {asset.id} - {asset.original_filename}")
                 return True
                 
             except Exception as e:
@@ -188,11 +221,8 @@ class DocumentController:
                 asset.status = "failed"
                 asset.error_message = str(e)
                 await db.commit()
+                logger.error(f"❌ Document processing failed for asset {asset_id}: {str(e)}")
                 raise
-                
-        except Exception as e:
-            logger.error(f"Error processing document: {str(e)}")
-            raise
     
     async def get_document(
         self,

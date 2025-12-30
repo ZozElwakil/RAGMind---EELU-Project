@@ -13,13 +13,13 @@ class Settings(BaseSettings):
     
     # Database Configuration
     database_url: str = Field(
-        default="postgresql+asyncpg://postgres:Ezz123456@localhost:5432/ragmind",
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/ragmind",
         alias="DATABASE_URL"
     )
     
     # LLM Provider Configuration
     gemini_api_key: str = Field(
-        default="AIzaSyD2N-rsmfER9P2dZznBh4wXKAFZRajJ0eU",
+        default="",
         alias="GEMINI_API_KEY"
     )
     llm_provider: str = Field(default="gemini", alias="LLM_PROVIDER")
@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     
+    environment: str = Field(default="development", validation_alias="ENVIRONMENT")
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

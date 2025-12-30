@@ -27,6 +27,7 @@ MANIFEST
 venv/
 .venv/
 env/
+.env/
 ENV/
 env.bak/
 venv.bak/
@@ -55,6 +56,9 @@ qdrant_data_test/
 # Uploaded Files
 uploads/*
 !uploads/.gitkeep
+
+# Bot Config
+bot_config.json
 
 # Logs
 *.log

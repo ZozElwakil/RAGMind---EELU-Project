@@ -26,6 +26,11 @@ class QdrantProvider(VectorDBInterface):
         try:
             from qdrant_client import QdrantClient
             from qdrant_client.models import Distance, VectorParams, PointStruct
+
+            # store model classes for later use
+            self._Distance = Distance
+            self._VectorParams = VectorParams
+            self._PointStruct = PointStruct
             
             if url.startswith("path://"):
                 path = url.replace("path://", "")
@@ -62,9 +67,9 @@ class QdrantProvider(VectorDBInterface):
             if not exists:
                 self.client.create_collection(
                     collection_name=collection_name,
-                    vectors_config=self.VectorParams(
+                    vectors_config=self._VectorParams(
                         size=dimension,
-                        distance=self.Distance.COSINE
+                        distance=self._Distance.COSINE
                     )
                 )
                 logger.info(f"Created Qdrant collection '{collection_name}'")
@@ -102,7 +107,7 @@ class QdrantProvider(VectorDBInterface):
             for i, (point_id, vector) in enumerate(zip(ids, vectors)):
                 payload = metadata[i] if metadata and i < len(metadata) else {}
                 points.append(
-                    self.PointStruct(
+                    self._PointStruct(
                         id=point_id,
                         vector=vector,
                         payload=payload

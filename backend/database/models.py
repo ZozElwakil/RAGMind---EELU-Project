@@ -6,7 +6,6 @@ from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Floa
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from pgvector.sqlalchemy import Vector
 from datetime import datetime
 
 Base = declarative_base()
@@ -23,7 +22,7 @@ class Project(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Metadata (renamed to avoid conflict with SQLAlchemy metadata)
-    extra_metadata = Column("metadata", JSON, default={})
+    extra_metadata = Column("metadata", JSON, default=dict)
     
     # Relationships
     assets = relationship("Asset", back_populates="project", cascade="all, delete-orphan")
@@ -56,7 +55,7 @@ class Asset(Base):
     processed_at = Column(DateTime(timezone=True), nullable=True)
     
     # Metadata (renamed to avoid conflict)
-    extra_metadata = Column("metadata", JSON, default={})
+    extra_metadata = Column("metadata", JSON, default=dict)
     
     # Relationships
     project = relationship("Project", back_populates="assets")
@@ -83,7 +82,7 @@ class Chunk(Base):
     embedding = Column(JSON, nullable=True)
     
     # Metadata (renamed to avoid conflict)
-    extra_metadata = Column("metadata", JSON, default={})  # page_number, section, etc.
+    extra_metadata = Column("metadata", JSON, default=dict)  # page_number, section, etc.
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())

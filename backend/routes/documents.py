@@ -61,7 +61,6 @@ async def upload_document(
         # Process in background
         background_tasks.add_task(
             document_controller.process_document,
-            db=db,
             asset_id=asset.id
         )
         
@@ -113,7 +112,7 @@ async def process_document(
 ):
     """Manually trigger document processing."""
     try:
-        await document_controller.process_document(db=db, asset_id=asset_id)
+        await document_controller.process_document(asset_id=asset_id)
         document = await document_controller.get_document(db=db, asset_id=asset_id)
         return document
     except ValueError as e:

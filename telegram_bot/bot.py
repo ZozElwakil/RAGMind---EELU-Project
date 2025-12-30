@@ -14,8 +14,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+logger.info("🤖 Initializing RAGMind Telegram Bot...")
+
 # Initialize bot
-bot = telebot.TeleBot(bot_settings.telegram_bot_token)
+try:
+    bot = telebot.TeleBot(bot_settings.telegram_bot_token)
+    logger.info("✅ Bot initialized successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize bot: {str(e)}")
+    raise
 
 def print_bot_link():
     """Print bot link to console."""
@@ -40,10 +47,21 @@ def setup_handlers():
 
 def main():
     """Start the bot."""
+    logger.info("Setting up message handlers...")
     setup_handlers()
+    logger.info("✅ Handlers registered")
+    
     print_bot_link()
-    logger.info("Starting RAGMind Telegram Bot (infinity_polling)...")
-    bot.infinity_polling()
+    
+    logger.info("🚀 Starting RAGMind Telegram Bot...")
+    logger.info("Bot will run indefinitely (infinity_polling)")
+    try:
+        bot.infinity_polling()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user (Ctrl+C)")
+    except Exception as e:
+        logger.error(f"Bot crashed: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main()

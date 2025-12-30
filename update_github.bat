@@ -3,71 +3,88 @@ chcp 65001 >nul
 color 0E
 echo ========================================
 echo    RAGMind - Update GitHub
-echo    تحديث المشروع على GitHub
+echo    Update project on GitHub
 echo ========================================
 echo.
+echo [DEBUG] Script started at %DATE% %TIME%
+echo [DEBUG] Current directory: "%CD%"
 
 :: Check if Git is initialized
 if not exist ".git\" (
-    echo [ERROR] المشروع غير مربوط بـ Git!
-    echo يرجى تشغيل push_to_github.bat أولاً
+    echo [ERROR] Project is not connected to Git!
+    echo Please run push_to_github.bat first
+    echo [DEBUG] .git directory not found
     pause
     exit /b 1
 )
+echo [DEBUG] Git repository found
+echo.
 
 echo ========================================
-echo 1. إضافة التعديلات الجديدة
+echo 1. Adding New Changes
 echo ========================================
+echo [DEBUG] Running: git add .
 git add .
-echo [✓] تم إضافة التعديلات
+echo [✓] Changes added
+echo [DEBUG] Files staged
 echo.
 
 echo ========================================
-echo 2. عرض الملفات المتغيرة
+echo 2. Showing Changed Files
 echo ========================================
+echo [DEBUG] Running: git status --short
 git status --short
+echo [DEBUG] Status displayed
 echo.
 
 echo ========================================
-echo 3. عمل Commit
+echo 3. Creating Commit
 echo ========================================
-set /p COMMIT_MSG="اكتب وصف التعديلات: "
+set /p COMMIT_MSG="Enter description of changes: "
 if "%COMMIT_MSG%"=="" set COMMIT_MSG=Update project files
+echo [DEBUG] Commit message: "%COMMIT_MSG%"
 
+echo [DEBUG] Running: git commit -m "%COMMIT_MSG%"
 git commit -m "%COMMIT_MSG%"
 if errorlevel 1 (
-    echo [WARNING] لا توجد تغييرات جديدة للـ commit
+    echo [WARNING] No new changes to commit
+    echo [DEBUG] git commit returned errorlevel %errorlevel%
     echo.
-    choice /C YN /M "هل تريد المتابعة على أي حال؟"
+    choice /C YN /M "Do you want to continue anyway?"
     if errorlevel 2 (
-        echo [INFO] تم الإلغاء
+        echo [INFO] Cancelled
+        echo [DEBUG] User cancelled operation
         pause
         exit /b 0
     )
 )
-echo [✓] تم عمل Commit
+echo [✓] Commit created
+echo [DEBUG] Commit operation completed
 echo.
 
 echo ========================================
-echo 4. رفع التحديثات على GitHub
+echo 4. Pushing Updates to GitHub
 echo ========================================
-echo [INFO] جاري رفع التحديثات...
+echo [INFO] Pushing updates...
+echo [DEBUG] Running: git push
 git push
 if errorlevel 1 (
     echo.
-    echo [ERROR] فشل رفع التحديثات!
+    echo [ERROR] Failed to push updates!
     echo.
-    echo جرب الأمر التالي:
+    echo Try the following command:
     echo   git pull origin main --rebase
     echo   git push
     echo.
+    echo [DEBUG] Push failed with errorlevel %errorlevel%
     pause
     exit /b 1
 )
 
 echo.
 echo ========================================
-echo ✅ تم تحديث المشروع بنجاح!
+echo ✅ Project updated successfully!
 echo ========================================
 echo.
+echo [DEBUG] Update completed at %DATE% %TIME%
 pause

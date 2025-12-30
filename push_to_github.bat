@@ -3,133 +3,163 @@ chcp 65001 >nul
 color 0B
 echo ========================================
 echo    RAGMind - Push to GitHub
-echo    رفع المشروع على GitHub
+echo    Push project to GitHub
 echo ========================================
 echo.
+echo [DEBUG] Script started at %DATE% %TIME%
+echo [DEBUG] Current directory: "%CD%"
 
 :: Repository URL - CHANGE THIS!
 set REPO_URL=https://github.com/ZozElwakil/RAGMind.git
 
-echo [!] هام: تأكد من تغيير REPO_URL في هذا الملف!
+echo [WARNING] IMPORTANT: Make sure to change REPO_URL in this file!
 echo     Current URL: %REPO_URL%
 echo.
-choice /C YN /M "هل قمت بتغيير الرابط إلى repository الخاص بك؟"
+choice /C YN /M "Have you changed the URL to your own repository?"
 if errorlevel 2 (
-    echo [!] يرجى تعديل الملف وتغيير REPO_URL
+    echo [WARNING] Please edit the file and change REPO_URL
+    echo [DEBUG] User chose not to confirm repository URL
     pause
     exit /b 1
 )
-
+echo [DEBUG] Repository URL confirmed
 echo.
+
 echo ========================================
-echo 1. تهيئة Git Repository
+echo 1. Initialize Git Repository
 echo ========================================
+echo [DEBUG] Checking for existing Git repository...
 
 :: Check if already initialized
 if exist ".git\" (
-    echo [✓] Git repository موجود بالفعل
+    echo [✓] Git repository already exists
+    echo [DEBUG] .git directory found
 ) else (
-    echo [INFO] جاري تهيئة Git...
+    echo [INFO] Initializing Git...
+    echo [DEBUG] Running: git init
     git init
     if errorlevel 1 (
-        echo [ERROR] فشل تهيئة Git!
-        echo تأكد من تثبيت Git: https://git-scm.com/
+        echo [ERROR] Failed to initialize Git!
+        echo Make sure Git is installed: https://git-scm.com/
+        echo [DEBUG] git init failed with errorlevel %errorlevel%
         pause
         exit /b 1
     )
-    echo [✓] تم تهيئة Git بنجاح
+    echo [✓] Git initialized successfully
+    echo [DEBUG] Git repository created
 )
 echo.
 
 echo ========================================
-echo 2. إضافة جميع الملفات
+echo 2. Adding All Files
 echo ========================================
+echo [DEBUG] Running: git add .
 git add .
 if errorlevel 1 (
-    echo [ERROR] فشل إضافة الملفات!
+    echo [ERROR] Failed to add files!
+    echo [DEBUG] git add failed with errorlevel %errorlevel%
     pause
     exit /b 1
 )
-echo [✓] تم إضافة جميع الملفات
+echo [✓] All files added
+echo [DEBUG] Files staged for commit
 echo.
 
 echo ========================================
-echo 3. عمل Commit
+echo 3. Creating Commit
 echo ========================================
+echo [DEBUG] Running: git commit -m "Initial commit: RAGMind - Intelligent Document Q&A System"
 git commit -m "Initial commit: RAGMind - Intelligent Document Q&A System"
 if errorlevel 1 (
-    echo [WARNING] ربما لا توجد تغييرات جديدة أو Commit موجود بالفعل
+    echo [WARNING] No new changes or commit already exists
+    echo [DEBUG] git commit returned errorlevel %errorlevel%
 )
-echo [✓] تم عمل Commit
+echo [✓] Commit created
+echo [DEBUG] Commit operation completed
 echo.
 
 echo ========================================
-echo 4. تسمية البرانش الرئيسي
+echo 4. Naming Main Branch
 echo ========================================
+echo [DEBUG] Running: git branch -M main
 git branch -M main
-echo [✓] تم تسمية البرانش بـ main
+if errorlevel 1 (
+    echo [WARNING] Failed to rename branch
+    echo [DEBUG] git branch failed with errorlevel %errorlevel%
+) else (
+    echo [✓] Branch renamed to main
+    echo [DEBUG] Branch renamed successfully
+)
 echo.
 
 echo ========================================
-echo 5. ربط المشروع بـ GitHub
+echo 5. Connecting Project to GitHub
 echo ========================================
+echo [DEBUG] Checking for existing origin remote...
 
 :: Check if origin already exists
 git remote | findstr /C:"origin" >nul 2>&1
 if errorlevel 1 (
-    echo [INFO] جاري ربط المشروع بـ %REPO_URL%...
+    echo [INFO] Connecting project to %REPO_URL%...
+    echo [DEBUG] Running: git remote add origin %REPO_URL%
     git remote add origin %REPO_URL%
     if errorlevel 1 (
-        echo [ERROR] فشل ربط المشروع!
+        echo [ERROR] Failed to connect project!
+        echo [DEBUG] git remote add failed with errorlevel %errorlevel%
         pause
         exit /b 1
     )
-    echo [✓] تم ربط المشروع بنجاح
+    echo [✓] Project connected successfully
+    echo [DEBUG] Remote origin added
 ) else (
-    echo [!] Remote origin موجود بالفعل
-    echo [INFO] تحديث الرابط...
+    echo [WARNING] Remote origin already exists
+    echo [INFO] Updating URL...
+    echo [DEBUG] Running: git remote set-url origin %REPO_URL%
     git remote set-url origin %REPO_URL%
-    echo [✓] تم تحديث الرابط
+    echo [✓] URL updated
+    echo [DEBUG] Remote origin URL updated
 )
 echo.
 
 echo ========================================
-echo 6. رفع الملفات على GitHub
+echo 6. Pushing Files to GitHub
 echo ========================================
-echo [INFO] جاري رفع الملفات...
-echo [!] سيُطلب منك إدخال:
-echo     - Username: اسم المستخدم على GitHub
-echo     - Password: Personal Access Token (ليس الباسورد العادي!)
+echo [INFO] Pushing files...
+echo [WARNING] You will be prompted for:
+echo     - Username: Your GitHub username
+echo     - Password: Personal Access Token (NOT your regular password!)
 echo.
-echo [INFO] للحصول على Token:
+echo [INFO] To get a Token:
 echo     GitHub → Settings → Developer settings → Personal access tokens
 echo.
-
+echo [DEBUG] Running: git push -u origin main
 git push -u origin main
 if errorlevel 1 (
     echo.
-    echo [ERROR] فشل رفع الملفات!
+    echo [ERROR] Failed to push files!
     echo.
-    echo الأسباب المحتملة:
-    echo   1. بيانات الدخول غير صحيحة (استخدم Token ليس Password)
-    echo   2. الرابط غير صحيح
-    echo   3. لا يوجد اتصال بالإنترنت
+    echo Possible causes:
+    echo   1. Incorrect credentials (use Token, not Password)
+    echo   2. Incorrect URL
+    echo   3. No internet connection
     echo.
-    echo للمحاولة مرة أخرى، شغل الأمر:
+    echo To try again, run the command:
     echo   git push -u origin main
     echo.
+    echo [DEBUG] Push failed with errorlevel %errorlevel%
     pause
     exit /b 1
 )
 
 echo.
 echo ========================================
-echo ✅ تم رفع المشروع بنجاح!
+echo ✅ Project pushed successfully!
 echo ========================================
 echo.
-echo يمكنك الآن زيارة المشروع على:
+echo You can now visit the project at:
 echo %REPO_URL%
 echo.
-echo للتحديثات المستقبلية، استخدم: update_github.bat
+echo For future updates, use: update_github.bat
 echo.
+echo [DEBUG] Push completed successfully at %DATE% %TIME%
 pause

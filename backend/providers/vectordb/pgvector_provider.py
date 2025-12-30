@@ -71,8 +71,6 @@ class PGVectorProvider(VectorDBInterface):
                     
                     if chunk:
                         chunk.embedding = vector
-                        if metadata and i < len(metadata):
-                            chunk.extra_metadata.update(metadata[i])
                 
                 await session.commit()
                 logger.info(f"Added {len(vectors)} vectors to collection '{collection_name}'")

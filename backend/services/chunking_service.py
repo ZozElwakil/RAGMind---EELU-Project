@@ -3,7 +3,7 @@ Text Chunking Service.
 Handles splitting text into chunks using LangChain.
 """
 from typing import List, Dict, Any
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from backend.config import settings
 import logging
 

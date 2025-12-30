@@ -23,10 +23,15 @@ from backend.routes import projects, documents, query, health, stats, bot_config
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
-    logger.info("Starting RAGMind API...")
+    logger.info("🚀 Starting RAGMind API...")
+    logger.debug(f"Environment: {settings.environment}")
+    logger.debug(f"Database URL: {settings.database_url.replace(settings.database_url.split('@')[0].split(':')[1], '***') if '@' in settings.database_url else 'configured'}")
+    logger.debug(f"Vector DB Provider: {settings.vector_db_provider}")
+    logger.debug(f"LLM Provider: {settings.llm_provider}")
     try:
+        logger.info("Initializing database...")
         await init_db()
-        logger.info("Database initialized successfully")
+        logger.info("✅ Database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {str(e)}")
         raise
@@ -79,9 +84,14 @@ app.include_router(query.router)
 app.include_router(stats.router)
 app.include_router(bot_config.router)
 
+logger.info("✅ All routers registered")
+logger.info(f"🚀 RAGMind API ready at http://{settings.api_host}:{settings.api_port}")
+logger.info(f"📚 API documentation at http://{settings.api_host}:{settings.api_port}/docs")
+
 
 if __name__ == "__main__":
     import uvicorn
+    logger.info("Starting development server...")
     uvicorn.run(
         "backend.main:app",
         host=settings.api_host,

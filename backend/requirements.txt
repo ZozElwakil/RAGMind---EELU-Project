@@ -14,7 +14,8 @@ pgvector==0.2.4
 langchain==0.1.4
 langchain-google-genai==0.0.6
 langchain-community==0.0.16
-langchain-text-splitters
+
+
 
 # Document Processing
 pypdf==4.0.1
@@ -36,4 +37,4 @@ pydantic-settings==2.1.0
 aiofiles==23.2.1
 
 # HTTP Client
-httpx==0.26.0
+httpx==0.25.2
