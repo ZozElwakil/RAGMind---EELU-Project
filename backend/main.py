@@ -15,6 +15,7 @@ except ImportError:
 # Configure logging
 from backend.config import settings
 import logging
+from backend.security.middleware import SecurityRateLimitMiddleware
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level),
@@ -23,7 +24,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from backend.database import init_db, close_db
-from backend.routes import projects, documents, query, health, stats, bot_config, app_config
+from backend.routes import (
+    admin_console,
+    admin_users,
+    app_config,
+    auth,
+    bot_config,
+    bot_integrations,
+    conversations,
+    documents,
+    health,
+    incidents,
+    projects,
+    query,
+    security,
+    stats,
+    telegram_webhook,
+)
 
 
 @asynccontextmanager
@@ -31,6 +48,16 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     logger.info("Starting RAGMind API...")
+    try:
+        provider_state = app_config.normalize_provider_runtime_config()
+        if provider_state.get("migrated"):
+            logger.warning(
+                "Migrated runtime provider config for fields: %s",
+                ", ".join(provider_state.get("updated_fields", [])) or "none",
+            )
+    except Exception:
+        logger.exception("Failed to normalize runtime provider config during startup")
+
     try:
         await init_db()
         logger.info("Database initialized successfully")
@@ -75,11 +102,14 @@ app = FastAPI(**_app_kwargs)
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Security middleware: global API throttling.
+app.add_middleware(SecurityRateLimitMiddleware)
 
 # GZip compression for responses
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -90,8 +120,16 @@ app.include_router(projects.router)
 app.include_router(documents.router)
 app.include_router(query.router)
 app.include_router(stats.router)
+app.include_router(security.router)
+app.include_router(incidents.router)
+app.include_router(admin_users.router)
+app.include_router(admin_console.router)
+app.include_router(bot_integrations.router)
+app.include_router(conversations.router)
+app.include_router(telegram_webhook.router)
 app.include_router(bot_config.router)
 app.include_router(app_config.router)
+app.include_router(auth.router)
 
 
 if __name__ == "__main__":

@@ -14,12 +14,15 @@ from backend.providers.vectordb.factory import VectorDBProviderFactory
 from datetime import datetime
 from fastapi import Depends
 import logging
+from backend.security.sanitization import sanitize_filename
 
 logger = logging.getLogger(__name__)
 
 
 class DocumentController:
     """Controller for document operations."""
+
+    # SECURITY RULE: all user-facing document queries must be scoped by JWT owner_id.
     
     def __init__(self, file_service: FileService = Depends(FileService)):
         """Initialize document controller."""
@@ -37,16 +40,20 @@ class DocumentController:
     async def upload_document(
         self,
         db: AsyncSession,
+        owner_id: int,
         project_id: int,
         file_content: bytes,
         filename: str,
-        file_size: int
+        file_size: int,
+        content_type: Optional[str] = None,
+        ip_address: Optional[str] = None,
     ) -> Asset:
         """
         Upload document and save metadata.
         
         Args:
             db: Database session
+            owner_id: Owner user ID
             project_id: Project ID
             file_content: File content bytes
             filename: Original filename
@@ -59,34 +66,46 @@ class DocumentController:
             ValueError: If validation fails
         """
         try:
+            safe_filename = sanitize_filename(filename)
+
             # Validate file
-            is_valid, error_msg = self.file_service.validate_file(filename, file_size)
+            is_valid, error_msg = self.file_service.validate_file(
+                filename=safe_filename,
+                file_size=file_size,
+                file_content=file_content,
+                content_type=content_type,
+                user_id=owner_id,
+                ip_address=ip_address,
+            )
             if not is_valid:
                 raise ValueError(error_msg)
             
             # Check project exists
-            project_stmt = select(Project).where(Project.id == project_id)
+            project_stmt = select(Project).where(
+                Project.id == project_id,
+                Project.owner_id == owner_id,
+            )
             project_result = await db.execute(project_stmt)
             project = project_result.scalar_one_or_none()
             if not project:
-                raise ValueError(f"Project not found: {project_id}")
+                raise ValueError("Forbidden")
             
             # Save file
             unique_filename, file_path = await self.file_service.save_upload_file(
                 file_content=file_content,
-                filename=filename,
-                project_id=project_id
+                filename=safe_filename,
+                project_id=project_id,
             )
             
             # Get file type
             from pathlib import Path
-            file_type = Path(filename).suffix.lstrip('.')
+            file_type = Path(safe_filename).suffix.lstrip('.')
             
             # Create asset record
             asset = Asset(
                 project_id=project_id,
                 filename=unique_filename,
-                original_filename=filename,
+                original_filename=safe_filename,
                 file_path=file_path,
                 file_size=file_size,
                 file_type=file_type,
@@ -125,6 +144,12 @@ class DocumentController:
             
             if not asset:
                 raise ValueError(f"Asset not found: {asset_id}")
+
+            owner_stmt = select(Project.owner_id).where(Project.id == asset.project_id)
+            owner_result = await db.execute(owner_stmt)
+            owner_id = owner_result.scalar_one_or_none()
+            if owner_id is None:
+                raise ValueError(f"Project owner not found: {asset.project_id}")
             
             # Update status to processing
             asset.status = "processing"
@@ -216,11 +241,15 @@ class DocumentController:
                     texts,
                     on_batch=on_embed_batch
                 )
+                if not embeddings:
+                    raise ValueError("No embeddings generated for processed document chunks")
+                embedding_dimension = len(embeddings[0]) if embeddings else 0
                 
                 # Store embeddings in chunks and vector DB
                 chunk_ids = [chunk.id for chunk in chunk_records]
                 vector_metadata = [
                     {
+                        'owner_id': owner_id,
                         'asset_id': chunk.asset_id,
                         'project_id': chunk.project_id,
                         'chunk_index': chunk.chunk_index
@@ -237,6 +266,10 @@ class DocumentController:
                 )
 
                 vector_db = VectorDBProviderFactory.create_provider()
+                await vector_db.create_collection(
+                    collection_name=f"project_{asset.project_id}",
+                    dimension=embedding_dimension,
+                )
                 await vector_db.add_vectors(
                     collection_name=f"project_{asset.project_id}",
                     vectors=embeddings,
@@ -294,7 +327,8 @@ class DocumentController:
     async def get_document(
         self,
         db: AsyncSession,
-        asset_id: int
+        asset_id: int,
+        owner_id: int,
     ) -> Optional[Asset]:
         """
         Get document by ID.
@@ -302,12 +336,20 @@ class DocumentController:
         Args:
             db: Database session
             asset_id: Asset ID
+            owner_id: Owner user ID
             
         Returns:
             Asset or None
         """
         try:
-            stmt = select(Asset).where(Asset.id == asset_id)
+            stmt = (
+                select(Asset)
+                .join(Project, Asset.project_id == Project.id)
+                .where(
+                    Asset.id == asset_id,
+                    Project.owner_id == owner_id,
+                )
+            )
             result = await db.execute(stmt)
             return result.scalar_one_or_none()
             
@@ -318,7 +360,8 @@ class DocumentController:
     async def list_project_documents(
         self,
         db: AsyncSession,
-        project_id: int
+        project_id: int,
+        owner_id: int,
     ) -> List[Asset]:
         """
         List all documents in project.
@@ -326,12 +369,21 @@ class DocumentController:
         Args:
             db: Database session
             project_id: Project ID
+            owner_id: Owner user ID
             
         Returns:
             List of assets
         """
         try:
-            stmt = select(Asset).where(Asset.project_id == project_id).order_by(Asset.created_at.desc())
+            stmt = (
+                select(Asset)
+                .join(Project, Asset.project_id == Project.id)
+                .where(
+                    Asset.project_id == project_id,
+                    Project.owner_id == owner_id,
+                )
+                .order_by(Asset.created_at.desc())
+            )
             result = await db.execute(stmt)
             return list(result.scalars().all())
             
@@ -342,7 +394,8 @@ class DocumentController:
     async def delete_document(
         self,
         db: AsyncSession,
-        asset_id: int
+        asset_id: int,
+        owner_id: int,
     ) -> bool:
         """
         Delete document and associated chunks.
@@ -350,13 +403,14 @@ class DocumentController:
         Args:
             db: Database session
             asset_id: Asset ID
+            owner_id: Owner user ID
             
         Returns:
             True if deleted
         """
         try:
             # Get asset
-            asset = await self.get_document(db, asset_id)
+            asset = await self.get_document(db, asset_id, owner_id)
             if not asset:
                 return False
             

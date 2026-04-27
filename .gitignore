@@ -44,6 +44,7 @@ venv.bak/
 
 # Local history snapshots
 .history/
+.playwright-cli/
 
 # Database
 *.db
@@ -61,6 +62,9 @@ uploads/*
 
 # Logs
 *.log
+*.out
+*.err
+uploads/logs/
 logs/
 
 # OS Files
@@ -92,26 +96,31 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
-# Alembic
-alembic.ini
+# Alembic (legacy root file)
+/alembic.ini
 
 # Other
 *.bak
 *.old
 .cache
 .codersinflow
-.vscode
 node_modules
-.venv
 .codex
+.code-review-graph/
+.agents/
+.specify/
 out
 dist
 *.vsix
 .claude
 CLAUDE.md
-.git
 __pycache__
 *.pyc
 .next
-.github
-.gitignore
+
+# Generated output files
+all_project_code.txt
+server_output.txt
+project-graph.md
+newplan.md
+tmp/
