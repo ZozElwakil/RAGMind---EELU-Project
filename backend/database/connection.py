@@ -8,12 +8,17 @@ from typing import AsyncGenerator
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
+from alembic.util.exc import CommandError
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from backend.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
+
+_ALEMBIC_ADVISORY_LOCK_ID = 721_942_013
 
 # Create async engine
 engine = create_async_engine(
@@ -57,11 +62,73 @@ async def init_db():
     """Initialize database extensions and apply Alembic migrations."""
     from sqlalchemy import text
 
+    def get_sync_database_url() -> str:
+        return settings.database_url.replace(
+            "postgresql+asyncpg://",
+            "postgresql+psycopg2://",
+            1,
+        )
+
     def run_alembic_upgrade() -> None:
         project_root = Path(__file__).resolve().parents[2]
         alembic_cfg = Config(str(project_root / "backend" / "alembic" / "alembic.ini"))
         alembic_cfg.set_main_option("script_location", str(project_root / "backend" / "alembic"))
-        command.upgrade(alembic_cfg, "head")
+        sync_database_url = get_sync_database_url()
+
+        def upgrade_to_head() -> None:
+            try:
+                command.upgrade(alembic_cfg, "head")
+            except CommandError as exc:
+                if "Can't locate revision identified by" not in str(exc):
+                    raise
+
+                if settings.environment.lower() == "production":
+                    logger.error(
+                        "Database is stamped with an unknown Alembic revision in production; "
+                        "refusing automatic recovery."
+                    )
+                    raise
+
+                logger.warning(
+                    "Database is stamped with an unknown Alembic revision. "
+                    "Stamping current schema to head before retrying migrations: %s",
+                    exc,
+                )
+                script = ScriptDirectory.from_config(alembic_cfg)
+                current_head = script.get_current_head()
+                recovery_engine = create_engine(sync_database_url)
+                try:
+                    with recovery_engine.begin() as conn:
+                        conn.execute(text("DELETE FROM alembic_version"))
+                        conn.execute(
+                            text("INSERT INTO alembic_version (version_num) VALUES (:version_num)"),
+                            {"version_num": current_head},
+                        )
+                finally:
+                    recovery_engine.dispose()
+                command.upgrade(alembic_cfg, "head")
+
+        if not sync_database_url.startswith("postgresql"):
+            upgrade_to_head()
+            return
+
+        sync_engine = create_engine(sync_database_url)
+        try:
+            with sync_engine.connect() as conn:
+                logger.info("Waiting for Alembic migration advisory lock")
+                conn.execute(
+                    text("SELECT pg_advisory_lock(:lock_id)"),
+                    {"lock_id": _ALEMBIC_ADVISORY_LOCK_ID},
+                )
+                try:
+                    upgrade_to_head()
+                finally:
+                    conn.execute(
+                        text("SELECT pg_advisory_unlock(:lock_id)"),
+                        {"lock_id": _ALEMBIC_ADVISORY_LOCK_ID},
+                    )
+        finally:
+            sync_engine.dispose()
 
     async def ensure_user_account_status_schema(conn):
         """Backfill user account status column for legacy user tables."""
@@ -268,6 +335,16 @@ async def init_db():
             )
         )
 
+    async def ensure_telegram_outbox_schema(conn):
+        """Backfill Telegram outbox retry columns for older local databases."""
+        await conn.execute(text("ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS delivery_next_attempt_at TIMESTAMPTZ"))
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_conversation_messages_delivery_next_attempt_at "
+                "ON conversation_messages(delivery_next_attempt_at)"
+            )
+        )
+
     try:
         async with engine.begin() as conn:
             try:
@@ -285,13 +362,46 @@ async def init_db():
         logger.error(f"Failed to apply Alembic migrations: {str(migration_error)}")
         raise
 
+    async def ensure_default_owner():
+        """Ensure a default platform owner exists."""
+        import bcrypt
+        from backend.database.models import User
+        from backend.security.auth import ROLE_PLATFORM_OWNER
+        from sqlalchemy.future import select
+
+        def get_password_hash(password: str) -> str:
+            return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+        async with async_session_maker() as session:
+            owner_username = "OWNERPLATFORM"
+            stmt_by_name = select(User).where(User.username == owner_username)
+            result_by_name = await session.execute(stmt_by_name)
+            existing_by_name = result_by_name.scalars().first()
+            if not existing_by_name:
+                owner_user = User(
+                    username=owner_username,
+                    hashed_password=get_password_hash("OWNERPLATFORM"),
+                    role=ROLE_PLATFORM_OWNER,
+                    status="ACTIVE"
+                )
+                session.add(owner_user)
+                await session.commit()
+                logger.info(f"Created default platform owner account: {owner_username}")
+            else:
+                existing_by_name.role = ROLE_PLATFORM_OWNER
+                existing_by_name.hashed_password = get_password_hash("OWNERPLATFORM")
+                await session.commit()
+                logger.info(f"Promoted existing user to platform owner: {owner_username}")
+
     # Keep startup resilient for legacy databases with partial historical schemas.
     try:
         async with engine.begin() as conn:
             await ensure_user_account_status_schema(conn)
             await ensure_incident_schema(conn)
             await ensure_audit_log_schema(conn)
+            await ensure_telegram_outbox_schema(conn)
             logger.info("Legacy security schema compatibility checks completed")
+        await ensure_default_owner()
     except Exception as compatibility_error:
         logger.warning(f"Could not apply legacy compatibility schema checks: {str(compatibility_error)}")
 

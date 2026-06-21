@@ -1,21 +1,15 @@
 @echo off
 REM RAGMind Unified Start Script
-setlocal
+setlocal EnableDelayedExpansion
+chcp 65001 >nul
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI"
 pushd "%ROOT%"
 
-set "FRONTEND_PORT=8080"
-set "BACKEND_HEALTH_URL=http://127.0.0.1:8000/health"
-set "FRONTEND_URL=http://localhost:%FRONTEND_PORT%/login.html?api=http://localhost:8000"
-set "FRONTEND_WINDOW_TITLE=RAGMind Frontend"
-set "STACK_LOG_WINDOW_TITLE=RAGMind Docker Logs"
-set "FRONTEND_PYTHON="
+set "BACKEND_HEALTH_URL=http://127.0.0.1:8000/health/full"
+set "BACKEND_HEALTH_TIMEOUT_SECONDS=15"
 set "LOGS_DIR=%ROOT%\uploads\logs"
 set "RUN_LOG=%LOGS_DIR%\start.log"
-set "STACK_LOG=%LOGS_DIR%\docker_stack.log"
-set "FRONTEND_LOG=%LOGS_DIR%\frontend.log"
-set "STACK_STATE_LOG=%LOGS_DIR%\docker_ps.log"
 set "COMPOSE_UP_ARGS=up -d"
 set "START_MODE=normal"
 
@@ -58,18 +52,6 @@ if errorlevel 1 (
 )
 del "%DOCKER_INFO_TMP%" >nul 2>&1
 
-if exist "%ROOT%\venv\Scripts\python.exe" (
-    set "FRONTEND_PYTHON=%ROOT%\venv\Scripts\python.exe"
-) else (
-    python --version >nul 2>&1
-    if errorlevel 1 (
-        call :log "[ERROR] Python was not found."
-        call :log "Run scripts\dev\setup.bat first."
-        goto :fail
-    )
-    set "FRONTEND_PYTHON=python"
-)
-
 if /I "%START_MODE%"=="build" (
     call :log "[INFO] Building and starting Docker services..."
 ) else (
@@ -83,15 +65,13 @@ if errorlevel 1 (
     call :log "Inspect logs in %RUN_LOG% or run: docker compose -f docker/docker-compose.yml logs --tail=200"
     goto :fail
 )
+call :log "[STATUS] Stack up"
 
 call :log "[INFO] Waiting for full backend readiness check..."
-for /l %%A in (1,1,180) do (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $response = Invoke-RestMethod -Uri '%BACKEND_HEALTH_URL%' -TimeoutSec 2; if ($response.status -eq 'healthy') { exit 0 } } catch { }; exit 1" >nul 2>&1
-    if not errorlevel 1 goto :backend_ready
-    timeout /t 1 /nobreak >nul
-)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(180); do { try { $response = Invoke-RestMethod -Uri '%BACKEND_HEALTH_URL%' -TimeoutSec %BACKEND_HEALTH_TIMEOUT_SECONDS%; if ($response.status -eq 'healthy') { exit 0 } } catch { }; Start-Sleep -Seconds 1 } while ((Get-Date) -lt $deadline); exit 1" >nul 2>&1
+if not errorlevel 1 goto :backend_ready
 call :log "[WARNING] Host health probe failed. Trying backend health from inside container..."
-docker exec ragmind-backend python -c "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); sys.exit(0 if data.get('status')=='healthy' else 1)" >nul 2>&1
+docker exec ragmind-backend python -c "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/full', timeout=8)); sys.exit(0 if data.get('status')=='healthy' else 1)" >nul 2>&1
 if not errorlevel 1 (
     call :log "[WARNING] Backend is healthy inside container, but host access to %BACKEND_HEALTH_URL% failed."
     call :log "[WARNING] Continuing startup. Check local networking/proxy rules if host API access remains unavailable."
@@ -104,62 +84,19 @@ call :log "Inspect logs in %RUN_LOG%"
 goto :fail
 
 :backend_ready
+call :log "[STATUS] Health passed"
 
->> "%STACK_STATE_LOG%" echo.
->> "%STACK_STATE_LOG%" echo ========================================
->> "%STACK_STATE_LOG%" echo [STACK STATUS] %date% %time%
->> "%STACK_STATE_LOG%" echo ========================================
->> "%STACK_STATE_LOG%" echo [COMMAND] docker compose -f docker/docker-compose.yml ps
-docker compose -f docker/docker-compose.yml ps >> "%STACK_STATE_LOG%" 2>&1
-
-tasklist /v | findstr /I /C:"%STACK_LOG_WINDOW_TITLE%" >nul
-if errorlevel 1 (
-    >> "%STACK_LOG%" echo.
-    >> "%STACK_LOG%" echo ========================================
-    >> "%STACK_LOG%" echo [STACK LOG SESSION] %date% %time%
-    >> "%STACK_LOG%" echo ========================================
-    call :log "[INFO] Streaming Docker logs to %STACK_LOG%"
-    start "%STACK_LOG_WINDOW_TITLE%" /min powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Continue'; Set-Location -LiteralPath '%ROOT%'; docker compose -f docker/docker-compose.yml logs -f --no-color *>> '%STACK_LOG%'"
-) else (
-    call :log "[INFO] Docker log streamer is already running"
-)
-
-netstat -ano | findstr /R /C:":%FRONTEND_PORT% .*LISTENING" >nul 2>&1
-if errorlevel 1 (
-    >> "%FRONTEND_LOG%" echo.
-    >> "%FRONTEND_LOG%" echo ========================================
-    >> "%FRONTEND_LOG%" echo [FRONTEND LOG SESSION] %date% %time%
-    >> "%FRONTEND_LOG%" echo ========================================
-    call :log "[INFO] Starting frontend server on http://localhost:%FRONTEND_PORT%"
-    call :log "[INFO] Frontend logs: %FRONTEND_LOG%"
-    start "%FRONTEND_WINDOW_TITLE%" /min powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Continue'; Set-Location -LiteralPath '%ROOT%\\frontend'; & '%FRONTEND_PYTHON%' -m http.server %FRONTEND_PORT% *>> '%FRONTEND_LOG%'"
-    for /l %%A in (1,1,20) do (
-        curl.exe -fsS "http://127.0.0.1:%FRONTEND_PORT%/" >nul 2>&1
-        if not errorlevel 1 goto :frontend_ready
-        timeout /t 1 /nobreak >nul
-    )
-    call :log "[ERROR] Frontend server did not start in time."
-    goto :fail
-) else (
-    call :log "[INFO] Frontend server already listening on port %FRONTEND_PORT%"
-)
-
-:frontend_ready
-
-call :log "[INFO] Opening frontend..."
-start "" "%FRONTEND_URL%" >nul 2>&1
+call :log "[STATUS] Smoke not run (run tools\test_all.py manually when needed)"
 
 call :log "."
 call :log "========================================"
-call :log "[✓] RAGMind is running"
+call :log "[OK] RAGMind backend stack is running"
 call :log "========================================"
 call :log "."
-call :log "Backend:   http://localhost:8000"
-call :log "Frontend:  http://localhost:%FRONTEND_PORT%"
-call :log "Health:    %BACKEND_HEALTH_URL%"
-call :log "Logs:      %RUN_LOG%"
-call :log "Stack Log: %STACK_LOG%"
-call :log "Stack PS:  %STACK_STATE_LOG%"
+call :log "Backend:       http://localhost:8000"
+call :log "Health:        %BACKEND_HEALTH_URL%"
+call :log "Next frontend: scripts\dev\newstart.bat"
+call :log "Logs:          %RUN_LOG%"
 call :log "."
 call :log "Stop with:"
 call :log "  scripts\dev\stop.bat"
@@ -169,14 +106,12 @@ goto :done
 :fail
 if not defined SKIP_SCRIPT_PAUSE pause
 popd
-endlocal
-exit /b 1
+endlocal & exit /b 1
 
 :done
 if not defined SKIP_SCRIPT_PAUSE pause
 popd
-endlocal
-exit /b 0
+endlocal & exit /b 0
 
 :docker_info_hint
 set "DOCKER_INFO_FILE=%~1"

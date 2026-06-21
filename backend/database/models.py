@@ -5,7 +5,7 @@ Defines tables for users, projects, assets, and chunks with vector embeddings.
 from enum import Enum as PyEnum
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Float, JSON, LargeBinary, Index, Boolean, Enum as SAEnum
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -56,7 +56,14 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(150), nullable=False, unique=True, index=True)
-    hashed_password = Column(String(255), nullable=False)
+    email = Column(String(255), unique=True, index=True, nullable=True)
+    hashed_password = Column(String(255), nullable=True)  # nullable for OAuth users
+
+    # OAuth Fields
+    auth_provider = Column(String(50), nullable=False, default="local", server_default="local")
+    google_id = Column(String(255), unique=True, index=True, nullable=True)
+
+    # Role and Status
     role = Column(String(30), nullable=False, default=UserRole.COMPANY_ADMIN.value, server_default=UserRole.COMPANY_ADMIN.value, index=True)
     company_name = Column(String(255), nullable=True)
     company_website = Column(String(500), nullable=True)
@@ -86,6 +93,8 @@ class User(Base):
     incident_logs = relationship("IncidentLog", back_populates="actor")
     performed_audit_logs = relationship("AuditLog", foreign_keys="AuditLog.actor_id", back_populates="actor_user")
     targeted_audit_logs = relationship("AuditLog", foreign_keys="AuditLog.target_user_id", back_populates="target_user")
+    whatsapp_integrations = relationship("WhatsAppIntegration", foreign_keys="WhatsAppIntegration.owner_id", back_populates="owner", cascade="all, delete-orphan")
+    whatsapp_customers = relationship("WhatsAppCustomer", back_populates="owner", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, username='{self.username}')>"
@@ -94,23 +103,24 @@ class User(Base):
 class Project(Base):
     """Project model for organizing documents."""
     __tablename__ = "projects"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     # Metadata (renamed to avoid conflict with SQLAlchemy metadata)
     extra_metadata = Column("metadata", JSON, default={})
-    
+
     # Relationships
     owner = relationship("User", back_populates="projects")
     assets = relationship("Asset", back_populates="project", cascade="all, delete-orphan")
     chunks = relationship("Chunk", back_populates="project", cascade="all, delete-orphan")
     bot_integrations = relationship("BotIntegration", back_populates="project", cascade="all, delete-orphan")
-    
+    whatsapp_integrations = relationship("WhatsAppIntegration", back_populates="project", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<Project(id={self.id}, owner_id={self.owner_id}, name='{self.name}')>"
 
@@ -118,28 +128,28 @@ class Project(Base):
 class Asset(Base):
     """Asset model for uploaded documents."""
     __tablename__ = "assets"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    
+
     # File information
     filename = Column(String(500), nullable=False)
     original_filename = Column(String(500), nullable=False)
     file_path = Column(String(1000), nullable=False)
     file_size = Column(Integer, nullable=False)  # in bytes
     file_type = Column(String(50), nullable=False)  # pdf, txt, docx
-    
+
     # Status
     status = Column(String(50), default="uploaded")  # uploaded, processing, completed, failed
     error_message = Column(Text, nullable=True)
-    
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     processed_at = Column(DateTime(timezone=True), nullable=True)
-    
+
     # Metadata (renamed to avoid conflict)
     extra_metadata = Column("metadata", JSON, default={})
-    
+
     # Relationships
     project = relationship("Project", back_populates="assets")
     chunks = relationship("Chunk", back_populates="asset", cascade="all, delete-orphan")
@@ -155,24 +165,24 @@ class Asset(Base):
 class Chunk(Base):
     """Chunk model for text chunks with vector embeddings."""
     __tablename__ = "chunks"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
-    
+
     # Content
     content = Column(Text, nullable=False)
     chunk_index = Column(Integer, nullable=False)  # Position in document
-    
+
     # Native pgvector column. Dimension is left flexible to support multiple embedding providers.
     embedding = Column(Vector(), nullable=True)
-    
+
     # Metadata (renamed to avoid conflict)
     extra_metadata = Column("metadata", JSON, default={})  # page_number, section, etc.
-    
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     project = relationship("Project", back_populates="chunks")
     asset = relationship("Asset", back_populates="chunks")
@@ -205,6 +215,7 @@ class BotIntegration(Base):
     show_sources_to_customer = Column(Boolean, nullable=False, default=False, server_default="false")
     human_handoff_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
     fallback_message = Column(Text, nullable=True)
+    system_prompt = Column(Text, nullable=True)
     last_error = Column(Text, nullable=True)
     last_update_at = Column(DateTime(timezone=True), nullable=True)
     created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -259,6 +270,68 @@ class TelegramCustomer(Base):
         return f"<TelegramCustomer(id={self.id}, bot_integration_id={self.bot_integration_id}, chat_id='{self.chat_id}')>"
 
 
+class WhatsAppIntegration(Base):
+    """Database-backed WhatsApp bot integration owned by a company user."""
+
+    __tablename__ = "whatsapp_integrations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    phone_number = Column(String(64), nullable=True, index=True)
+    session_id = Column(String(120), nullable=False, unique=True, index=True)
+    status = Column(String(32), nullable=False, default="pending", server_default="pending", index=True)
+    show_sources_to_customer = Column(Boolean, nullable=False, default=False, server_default="false")
+    human_handoff_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    fallback_message = Column(Text, nullable=True)
+    system_prompt = Column(Text, nullable=True)
+    last_error = Column(Text, nullable=True)
+    last_update_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    owner = relationship("User", foreign_keys=[owner_id], back_populates="whatsapp_integrations")
+    project = relationship("Project", back_populates="whatsapp_integrations")
+    customers = relationship("WhatsAppCustomer", back_populates="whatsapp_integration", cascade="all, delete-orphan")
+    conversations = relationship("Conversation", back_populates="whatsapp_integration", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_whatsapp_integrations_owner_project", "owner_id", "project_id"),
+        Index("ix_whatsapp_integrations_owner_status", "owner_id", "status"),
+    )
+
+    def __repr__(self):
+        return f"<WhatsAppIntegration(id={self.id}, owner_id={self.owner_id}, project_id={self.project_id}, status='{self.status}')>"
+
+
+class WhatsAppCustomer(Base):
+    """External WhatsApp user scoped to a single bot integration."""
+
+    __tablename__ = "whatsapp_customers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    whatsapp_integration_id = Column(Integer, ForeignKey("whatsapp_integrations.id", ondelete="CASCADE"), nullable=False, index=True)
+    phone_number = Column(String(64), nullable=False, index=True)
+    name = Column(String(120), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+
+    owner = relationship("User", back_populates="whatsapp_customers")
+    whatsapp_integration = relationship("WhatsAppIntegration", back_populates="customers")
+    conversations = relationship("Conversation", foreign_keys="Conversation.whatsapp_customer_id", back_populates="whatsapp_customer", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_whatsapp_customers_integration_phone", "whatsapp_integration_id", "phone_number", unique=True),
+        Index("ix_whatsapp_customers_owner_integration", "owner_id", "whatsapp_integration_id"),
+    )
+
+    def __repr__(self):
+        return f"<WhatsAppCustomer(id={self.id}, whatsapp_integration_id={self.whatsapp_integration_id}, phone_number='{self.phone_number}')>"
+
+
 class Conversation(Base):
     """Durable customer-support conversation for a Telegram customer."""
 
@@ -266,8 +339,11 @@ class Conversation(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    bot_integration_id = Column(Integer, ForeignKey("bot_integrations.id", ondelete="CASCADE"), nullable=False, index=True)
-    telegram_customer_id = Column(Integer, ForeignKey("telegram_customers.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel = Column(String(32), nullable=False, default="telegram", server_default="telegram", index=True)
+    bot_integration_id = Column(Integer, ForeignKey("bot_integrations.id", ondelete="CASCADE"), nullable=True, index=True)
+    telegram_customer_id = Column(Integer, ForeignKey("telegram_customers.id", ondelete="CASCADE"), nullable=True, index=True)
+    whatsapp_integration_id = Column(Integer, ForeignKey("whatsapp_integrations.id", ondelete="CASCADE"), nullable=True, index=True)
+    whatsapp_customer_id = Column(Integer, ForeignKey("whatsapp_customers.id", ondelete="CASCADE"), nullable=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String(32), nullable=False, default="open", server_default="open", index=True)
     needs_human = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
@@ -281,6 +357,8 @@ class Conversation(Base):
     assigned_to_user = relationship("User", foreign_keys=[assigned_to_user_id], back_populates="assigned_conversations")
     bot_integration = relationship("BotIntegration", back_populates="conversations")
     customer = relationship("TelegramCustomer", back_populates="conversations")
+    whatsapp_integration = relationship("WhatsAppIntegration", back_populates="conversations")
+    whatsapp_customer = relationship("WhatsAppCustomer", back_populates="conversations")
     project = relationship("Project")
     messages = relationship("ConversationMessage", back_populates="conversation", cascade="all, delete-orphan", order_by="ConversationMessage.created_at")
 
@@ -300,18 +378,36 @@ class ConversationMessage(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    bot_integration_id = Column(Integer, ForeignKey("bot_integrations.id", ondelete="CASCADE"), nullable=False, index=True)
+    bot_integration_id = Column(Integer, ForeignKey("bot_integrations.id", ondelete="CASCADE"), nullable=True, index=True)
+    whatsapp_integration_id = Column(Integer, ForeignKey("whatsapp_integrations.id", ondelete="CASCADE"), nullable=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
     telegram_customer_id = Column(Integer, ForeignKey("telegram_customers.id", ondelete="CASCADE"), nullable=True, index=True)
+    whatsapp_customer_id = Column(Integer, ForeignKey("whatsapp_customers.id", ondelete="CASCADE"), nullable=True, index=True)
     sender_type = Column(String(32), nullable=False, index=True)
     agent_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     text = Column(Text, nullable=False)
     telegram_update_id = Column(String(64), nullable=True, index=True)
     telegram_message_id = Column(String(64), nullable=True, index=True)
+    whatsapp_message_id = Column(String(128), nullable=True, index=True)
     answer_sources_json = Column(JSON, nullable=True)
     retrieval_metadata_json = Column(JSON, nullable=True)
     raw_payload_json = Column(JSON, nullable=True)
     raw_payload_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    delivery_status = Column(
+        String(16),
+        nullable=False,
+        default="none",
+        server_default="none",
+        index=True,
+    )
+    delivery_attempts = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    delivery_claimed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    delivery_next_attempt_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
     owner = relationship("User", foreign_keys=[owner_id], back_populates="conversation_messages")
@@ -319,12 +415,15 @@ class ConversationMessage(Base):
     bot_integration = relationship("BotIntegration", back_populates="messages")
     conversation = relationship("Conversation", back_populates="messages")
     customer = relationship("TelegramCustomer")
+    whatsapp_integration = relationship("WhatsAppIntegration")
+    whatsapp_customer = relationship("WhatsAppCustomer")
 
     __table_args__ = (
         Index("ix_conversation_messages_conversation_created", "conversation_id", "created_at"),
         Index("ix_conversation_messages_update_unique", "bot_integration_id", "telegram_update_id", unique=True),
         Index("ix_conversation_messages_message_unique", "bot_integration_id", "telegram_customer_id", "telegram_message_id", unique=True),
         Index("ix_conversation_messages_owner_sender", "owner_id", "sender_type"),
+        Index("ix_conversation_messages_delivery_next_attempt_at", "delivery_next_attempt_at"),
     )
 
     def __repr__(self):
@@ -454,3 +553,46 @@ class AuditLog(Base):
 
     def __repr__(self):
         return f"<AuditLog(id={self.id}, action='{self.action}', target_user_id={self.target_user_id})>"
+
+
+class RoleAssignmentHistory(Base):
+    """Audit trail for role changes applied to users."""
+
+    __tablename__ = "role_assignment_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    target_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    actor_username = Column(String(150), nullable=True)
+    old_role = Column(String(30), nullable=True)
+    new_role = Column(String(30), nullable=False)
+    reason = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    target_user = relationship("User", foreign_keys=[target_user_id], backref="role_history")
+    actor_user = relationship("User", foreign_keys=[actor_user_id])
+
+class SecurityEventRecord(Base):
+    """Database record for security events to persist them."""
+
+    __tablename__ = "security_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    severity = Column(String(32), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    username = Column(String(150), nullable=True, index=True)
+    ip_address = Column(String(128), nullable=True, index=True)
+    message = Column(String, nullable=False)
+    metadata_ = Column("metadata", JSON, default=dict)
+    is_simulation = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    delivery_status = Column(String(32), nullable=False, default="PENDING", server_default="PENDING", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_security_events_type_created", "event_type", "created_at"),
+        Index("ix_security_events_severity_created", "severity", "created_at"),
+        Index("ix_security_events_user_created", "user_id", "created_at"),
+        Index("ix_security_events_simulation_created", "is_simulation", "created_at"),
+        Index("ix_security_events_delivery_created", "delivery_status", "created_at"),
+    )

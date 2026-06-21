@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from backend.database.models import Asset, Project
+from backend.monitoring.metrics import QUERY_FAILURES_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,8 @@ class QueryController:
         query: str,
         top_k: int = 5,
         language: str = "ar",
-        asset_id: Optional[int] = None
+        asset_id: Optional[int] = None,
+        custom_system_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process query and generate answer.
@@ -155,7 +157,8 @@ class QueryController:
                 query=query,
                 context_chunks=similar_chunks,
                 language=language,
-                include_sources=True
+                include_sources=True,
+                custom_system_prompt=custom_system_prompt
             )
             
             logger.info(f"Generated answer for query (used {result['context_used']} chunks)")
@@ -163,4 +166,5 @@ class QueryController:
             
         except Exception as e:
             logger.exception("Error processing query infrastructure")
+            QUERY_FAILURES_TOTAL.labels(stage="query_controller").inc()
             raise QueryInfrastructureError("Query infrastructure failure") from e

@@ -21,6 +21,7 @@ from backend.config import settings
 from backend.database import get_db
 from backend.database.models import User, UserAccountStatus
 from backend.security.event_service import log_event
+from backend.security.client_ip import get_optional_client_ip
 from backend.security.jwt_utils import create_jwt_access_token, decode_jwt_access_token
 from backend.security.security_event import SecurityEventType, SecuritySeverity
 from backend.security.sanitization import sanitize_text
@@ -71,9 +72,19 @@ def _configured_platform_owner_username() -> str:
 
 def get_product_role_for_user(user: User | None) -> str:
     """Return the DB-backed product role used for SaaS authorization."""
-    role = _normalize_role(str(getattr(user, "role", "") or ""))
-    if role == ROLE_PLATFORM_OWNER:
-        return ROLE_PLATFORM_OWNER
+    role = sanitize_text(
+        str(getattr(user, "role", "") or ""),
+        max_length=64,
+        strip_html=True,
+        allow_newlines=False,
+    ).strip().lower()
+    if role in {
+        ROLE_PLATFORM_OWNER,
+        ROLE_COMPANY_ADMIN,
+        ROLE_SECURITY_ENGINEER,
+        ROLE_CYBERSECURITY_ENGINEER,
+    }:
+        return role
     return ROLE_COMPANY_ADMIN
 
 
@@ -203,15 +214,13 @@ def has_security_engineer_role(roles: List[str]) -> bool:
     return has_role(roles, ROLE_SECURITY_ENGINEER) or has_role(roles, ROLE_CYBERSECURITY_ENGINEER)
 
 
+def _get_request_auth_user(request: Request) -> AuthUser | None:
+    auth_user = getattr(getattr(request, "state", None), "auth_user", None)
+    return auth_user if isinstance(auth_user, AuthUser) else None
+
+
 def _extract_client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip() or None
-    if request.client and request.client.host:
-        return request.client.host
-    return None
+    return get_optional_client_ip(request)
 
 
 def _verify_pbkdf2_sha256(password: str, encoded_hash: str) -> bool:
@@ -388,7 +397,10 @@ def _decode_access_token(token: str) -> AuthUser:
         if ROLE_USER not in resolved_roles:
             resolved_roles.append(ROLE_USER)
 
-    return AuthUser(username=username, roles=resolved_roles)
+    return AuthUser(
+        username=username,
+        roles=resolved_roles,
+    )
 
 
 async def _get_user_for_token_subject(
@@ -542,6 +554,7 @@ async def get_current_user(
         auth_service=auth_service,
         user=user,
     )
+    request.state.auth_user = token_user
 
     return token_user
 
@@ -581,6 +594,7 @@ async def get_current_db_user(
         auth_service=auth_service,
         user=user,
     )
+    request.state.auth_user = token_user
 
     return user
 
@@ -618,6 +632,10 @@ async def require_security_center_access(
 ) -> User:
     """Allow Security Center access only for Cybersecurity Engineer users."""
     roles = resolve_roles_for_username(current_user.username)
+    product_role = get_product_role_for_user(current_user)
+    if product_role not in roles:
+        roles.append(product_role)
+
     if has_security_engineer_role(roles) or has_role(roles, ROLE_ADMIN):
         return current_user
 
@@ -649,6 +667,10 @@ async def require_incident_access(
 ) -> User:
     """Allow incidents access only for security_engineer and admin roles."""
     roles = resolve_roles_for_username(current_user.username)
+    product_role = get_product_role_for_user(current_user)
+    if product_role not in roles:
+        roles.append(product_role)
+
     if has_security_engineer_role(roles) or has_role(roles, ROLE_ADMIN):
         return current_user
 
@@ -680,6 +702,10 @@ async def require_admin_access(
 ) -> User:
     """Allow admin endpoints only for admin role users."""
     roles = resolve_roles_for_username(current_user.username)
+    product_role = get_product_role_for_user(current_user)
+    if product_role not in roles:
+        roles.append(product_role)
+
     if has_role(roles, ROLE_ADMIN):
         return current_user
 

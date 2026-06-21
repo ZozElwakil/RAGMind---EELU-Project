@@ -5,10 +5,9 @@ import csv
 import io
 import json
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -16,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.database.models import User, UserAccountStatus
-from backend.security.auth import require_security_center_access
+from backend.config import settings
+from backend.security.auth import ROLE_PLATFORM_OWNER, get_product_role_for_user, require_security_center_access
+from backend.security.client_ip import get_optional_client_ip
 from backend.services.security_dashboard_service import security_dashboard_service
 
 
@@ -34,7 +35,7 @@ class SecurityStatsResponse(BaseModel):
 
 
 class SecurityEventResponse(BaseModel):
-    id: UUID
+    id: int
     timestamp: datetime
     event_type: str
     severity: str
@@ -43,6 +44,8 @@ class SecurityEventResponse(BaseModel):
     ip_address: Optional[str] = None
     message: str
     metadata: Dict[str, Any]
+    is_simulation: bool = False
+    delivery_status: str = "PENDING"
 
 
 class SecuritySimulationResponse(BaseModel):
@@ -61,22 +64,19 @@ class SecurityUserStatusSummaryResponse(BaseModel):
 
 
 class SecurityUserStatusEventResponse(BaseModel):
-    id: UUID
+    id: int
     timestamp: datetime
     event_type: str
     user_id: Optional[int] = None
     actor: Optional[str] = None
     reason: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    is_simulation: bool = False
+    delivery_status: str = "PENDING"
 
 
 def _extract_client_ip(request: Request) -> Optional[str]:
-    forwarded_for = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    if forwarded_for:
-        return forwarded_for[:128]
-    if request.client and request.client.host:
-        return str(request.client.host)[:128]
-    return None
+    return get_optional_client_ip(request, max_length=128)
 
 
 def _to_event_responses(events: List[Dict[str, Any]]) -> List[SecurityEventResponse]:
@@ -96,6 +96,8 @@ def _to_events_export_csv(events: List[Dict[str, Any]]) -> str:
         "username",
         "ip_address",
         "message",
+        "is_simulation",
+        "delivery_status",
         "metadata_json",
     ])
 
@@ -111,6 +113,8 @@ def _to_events_export_csv(events: List[Dict[str, Any]]) -> str:
             str(event.get("username") or ""),
             str(event.get("ip_address") or ""),
             str(event.get("message") or ""),
+            "true" if bool(event.get("is_simulation")) else "false",
+            str(event.get("delivery_status") or ""),
             json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
         ])
 
@@ -170,29 +174,32 @@ async def _resolve_simulation_target_user_id(
 
 @router.get("/stats", response_model=SecurityStatsResponse)
 async def security_stats(
+    db: AsyncSession = Depends(get_db),
     _current_user: User = Depends(require_security_center_access),
 ):
     """Return aggregated security counters for dashboard cards."""
-    return SecurityStatsResponse(**security_dashboard_service.get_stats())
+    return SecurityStatsResponse(**await security_dashboard_service.get_stats(db=db))
 
 
 @router.get("/events", response_model=List[SecurityEventResponse])
 async def security_events(
     limit: int = Query(default=20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
     _current_user: User = Depends(require_security_center_access),
 ):
     """Return latest security events for feed widgets."""
-    payload = security_dashboard_service.get_dashboard_payload(limit=limit)
+    payload = await security_dashboard_service.get_dashboard_payload(db=db, limit=limit)
     return _to_event_responses(payload["events"])
 
 
 @router.get("/events/export")
 async def security_events_export(
     limit: int = Query(default=1000, ge=1, le=5000),
+    db: AsyncSession = Depends(get_db),
     _current_user: User = Depends(require_security_center_access),
 ):
     """Download security events as a CSV file for SOC reporting and evidence retention."""
-    events = security_dashboard_service.get_events_for_export(limit=limit)
+    events = await security_dashboard_service.get_events_for_export(db=db, limit=limit)
     csv_payload = _to_events_export_csv(events)
     filename = f"security-events-{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
 
@@ -219,10 +226,11 @@ async def security_users_status_summary(
 @router.get("/users/events", response_model=List[SecurityUserStatusEventResponse])
 async def security_users_events(
     limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
     _current_user: User = Depends(require_security_center_access),
 ):
     """Return latest user account status change events (suspend/block/restore)."""
-    events = security_dashboard_service.get_user_status_events(limit=limit)
+    events = await security_dashboard_service.get_user_status_events(db=db, limit=limit)
     return [SecurityUserStatusEventResponse(**event) for event in events]
 
 
@@ -230,7 +238,7 @@ async def security_users_events(
 async def simulate_security_attack(
     request: Request,
     target_user_id: Optional[int] = Query(default=None, gt=0),
-    escalate_to_block: bool = Query(default=True),
+    escalate_to_block: bool = Query(default=False),
     current_user: User = Depends(require_security_center_access),
     db: AsyncSession = Depends(get_db),
 ):
@@ -240,6 +248,23 @@ async def simulate_security_attack(
         current_user=current_user,
         requested_target_user_id=target_user_id,
     )
+
+    if escalate_to_block:
+        if target_user_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Destructive simulation requires an explicit target_user_id",
+            )
+        if not settings.security_simulation_destructive_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail="Destructive simulation disabled by configuration",
+            )
+        if get_product_role_for_user(current_user) != ROLE_PLATFORM_OWNER:
+            raise HTTPException(
+                status_code=403,
+                detail="Only platform owners can run destructive simulations",
+            )
 
     simulation_result = await security_dashboard_service.simulate_attack_with_user_control(
         db=db,
@@ -252,7 +277,7 @@ async def simulate_security_attack(
     )
     await db.commit()
 
-    payload = security_dashboard_service.get_dashboard_payload(limit=20)
+    payload = await security_dashboard_service.get_dashboard_payload(db=db, limit=20)
 
     return SecuritySimulationResponse(
         generated_count=int(simulation_result.get("generated_count", 0)),
@@ -268,12 +293,14 @@ async def simulate_security_attack(
 async def security_events_stream(
     request: Request,
     limit: int = Query(default=20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
     _current_user: User = Depends(require_security_center_access),
 ):
     """Stream security dashboard updates via SSE (events + aggregate stats)."""
     return StreamingResponse(
         security_dashboard_service.stream_dashboard_updates(
             request=request,
+            db=db,
             limit=limit,
         ),
         media_type="text/event-stream",

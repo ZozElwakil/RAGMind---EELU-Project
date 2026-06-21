@@ -10,8 +10,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -28,6 +28,7 @@ venv/
 .venv/
 env/
 ENV/
+
 env.bak/
 venv.bak/
 
@@ -36,15 +37,13 @@ venv.bak/
 
 # VS Code
 .vscode/
-
 # Environment Variables
 .env
 .env.local
 .env.*.local
-
-# Local history snapshots
-.history/
-.playwright-cli/
+docker/env/.env.*
+!docker/env/
+!docker/env/.env.example.*
 
 # Database
 *.db
@@ -55,6 +54,14 @@ postgres-data/
 # Qdrant Data
 qdrant_data/
 qdrant_data_test/
+
+
+
+# Local history snapshots
+.history/
+.playwright-cli/
+
+
 
 # Uploaded Files
 uploads/*
@@ -121,6 +128,8 @@ __pycache__
 # Generated output files
 all_project_code.txt
 server_output.txt
-project-graph.md
+/project-graph.md
 newplan.md
 tmp/
+frontend-next/test-results/
+screens/

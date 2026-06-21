@@ -18,8 +18,6 @@ logger = logging.getLogger(__name__)
 class LLMProviderFactory:
     """Factory for creating LLM and embedding provider instances."""
 
-    _llm_instances: Dict[str, LLMInterface] = {}
-    _embedding_instances: Dict[str, LLMInterface] = {}
     _llm_registry: Dict[str, Callable[[], LLMInterface]] = {}
     _embedding_registry: Dict[str, Callable[[], LLMInterface]] = {}
     _initialized = False
@@ -47,14 +45,12 @@ class LLMProviderFactory:
         """Register or override an LLM provider builder."""
         key = provider_name.lower()
         cls._llm_registry[key] = builder
-        cls._llm_instances.pop(key, None)
 
     @classmethod
     def register_embedding_provider(cls, provider_name: str, builder: Callable[[], LLMInterface]) -> None:
         """Register or override an embedding provider builder."""
         key = provider_name.lower()
         cls._embedding_registry[key] = builder
-        cls._embedding_instances.pop(key, None)
 
     @staticmethod
     def _build_openrouter_headers() -> Dict[str, str]:
@@ -67,16 +63,19 @@ class LLMProviderFactory:
 
     @staticmethod
     def _build_gemini_provider() -> LLMInterface:
-        return GeminiProvider()
+        api_key = get_runtime_value("gemini_api_key", settings.gemini_api_key)
+        return GeminiProvider(api_key=api_key)
 
     @staticmethod
     def _build_gemini_lite_provider() -> LLMInterface:
-        return GeminiProvider(model_name=settings.gemini_lite_model)
+        api_key = get_runtime_value("gemini_api_key", settings.gemini_api_key)
+        return GeminiProvider(api_key=api_key, model_name=settings.gemini_lite_model)
 
     @classmethod
     def _build_openrouter_gemini_2_flash_provider(cls) -> LLMInterface:
+        api_key = get_runtime_value("openrouter_api_key", settings.openrouter_api_key)
         return OpenAICompatProvider(
-            api_key=settings.openrouter_api_key,
+            api_key=api_key,
             base_url=settings.openrouter_base_url,
             model_name=settings.openrouter_gemini_2_flash_model,
             provider_label="OpenRouter",
@@ -85,8 +84,9 @@ class LLMProviderFactory:
 
     @classmethod
     def _build_openrouter_free_provider(cls) -> LLMInterface:
+        api_key = get_runtime_value("openrouter_api_key", settings.openrouter_api_key)
         return OpenAICompatProvider(
-            api_key=settings.openrouter_api_key,
+            api_key=api_key,
             base_url=settings.openrouter_base_url,
             model_name=settings.openrouter_free_model,
             provider_label="OpenRouter",
@@ -95,8 +95,9 @@ class LLMProviderFactory:
 
     @classmethod
     def _build_openrouter_gemma_4_26b_a4b_provider(cls) -> LLMInterface:
+        api_key = get_runtime_value("openrouter_api_key", settings.openrouter_api_key)
         return OpenAICompatProvider(
-            api_key=settings.openrouter_api_key,
+            api_key=api_key,
             base_url=settings.openrouter_base_url,
             model_name=settings.openrouter_gemma_4_26b_a4b_model,
             provider_label="OpenRouter",
@@ -105,8 +106,9 @@ class LLMProviderFactory:
 
     @staticmethod
     def _build_groq_llama_3_3_70b_versatile_provider() -> LLMInterface:
+        api_key = get_runtime_value("groq_api_key", settings.groq_api_key)
         return OpenAICompatProvider(
-            api_key=settings.groq_api_key,
+            api_key=api_key,
             base_url=settings.groq_base_url,
             model_name=settings.groq_llama_3_3_70b_versatile_model,
             provider_label="Groq",
@@ -114,8 +116,9 @@ class LLMProviderFactory:
 
     @staticmethod
     def _build_cerebras_llama_3_1_8b_provider() -> LLMInterface:
+        api_key = get_runtime_value("cerebras_api_key", settings.cerebras_api_key)
         return OpenAICompatProvider(
-            api_key=settings.cerebras_api_key,
+            api_key=api_key,
             base_url=settings.cerebras_base_url,
             model_name=settings.cerebras_llama_3_1_8b_model,
             provider_label="Cerebras",
@@ -124,8 +127,8 @@ class LLMProviderFactory:
     @staticmethod
     def _build_cohere_provider() -> LLMInterface:
         from backend.providers.llm.cohere_provider import CohereProvider
-
-        return CohereProvider()
+        api_key = get_runtime_value("cohere_api_key", settings.cohere_api_key)
+        return CohereProvider(api_key=api_key)
 
     @classmethod
     def create_provider(cls, provider_name: str = None) -> LLMInterface:
@@ -147,18 +150,13 @@ class LLMProviderFactory:
         provider_name = provider_name or get_runtime_value("llm_provider", settings.llm_provider)
         provider_name = provider_name.lower()
 
-        if provider_name in cls._llm_instances:
-            return cls._llm_instances[provider_name]
-
         builder = cls._llm_registry.get(provider_name)
         if not builder:
             available = ", ".join(cls.get_available_providers())
             raise ValueError(f"Unsupported LLM provider: {provider_name}. Available: {available}")
 
         logger.info("Creating LLM provider: %s", provider_name)
-        instance = builder()
-        cls._llm_instances[provider_name] = instance
-        return instance
+        return builder()
 
     @classmethod
     def create_embedding_provider(cls, provider_name: str = None) -> LLMInterface:
@@ -177,18 +175,13 @@ class LLMProviderFactory:
         provider_name = provider_name or get_runtime_value("embedding_provider", settings.embedding_provider)
         provider_name = provider_name.lower()
 
-        if provider_name in cls._embedding_instances:
-            return cls._embedding_instances[provider_name]
-
         builder = cls._embedding_registry.get(provider_name)
         if not builder:
             available = ", ".join(cls.get_available_embedding_providers())
             raise ValueError(f"Unsupported embedding provider: {provider_name}. Available: {available}")
 
         logger.info("Creating embedding provider: %s", provider_name)
-        instance = builder()
-        cls._embedding_instances[provider_name] = instance
-        return instance
+        return builder()
 
     @classmethod
     def get_available_providers(cls) -> List[str]:

@@ -1,19 +1,16 @@
 # 1. بنبدأ بنسخة بايثون خفيفة وسريعة
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # 2. منع بايثون من إنشاء ملفات مؤقتة وتسريع الـ Logs
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV HOME=/app/tmp
 
 # 3. تحديد مكان العمل جوه الحاوية
 WORKDIR /app
 
-# 4. تثبيت مكتبات النظام (مهمة جداً للـ PDF والمكتبات التقنية)
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libmagic-dev \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# 4. Keep the image independent from OS package mirrors.
+# Runtime dependencies are installed from Python wheels below.
 
 # 5. نسخ ملف المتطلبات وتثبيته
 # بنسخ الملف من مساره اللي شفناه في الـ .bat
@@ -26,11 +23,17 @@ COPY telegram_bot ./telegram_bot
 COPY app_config.json ./app_config.json
 COPY bot_config.json ./bot_config.json
 
-RUN mkdir -p /app/uploads
+RUN addgroup --system ragmind \
+    && adduser --system --ingroup ragmind --home /app ragmind \
+    && mkdir -p /app/uploads /app/tmp \
+    && mkdir -p /app/tmp/.gunicorn \
+    && chown -R ragmind:ragmind /app/uploads /app/tmp
+
+USER ragmind
 
 # 7. البورت اللي الباكند هيشتغل عليه
 EXPOSE 8000
 
 # 8. أمر التشغيل النهائي (بديل لآخر سطر في ملف الـ .bat)
 # لاحظ إننا ثبتنا البورت على 8000 لتوحيد الشغل
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["gunicorn", "backend.main:app", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--graceful-timeout", "30", "--access-logfile", "-"]
